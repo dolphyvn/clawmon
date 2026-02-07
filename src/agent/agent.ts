@@ -1,102 +1,15 @@
 /**
  * AI Agent - analyzes metrics and decides actions
+ * Supports multiple LLM providers
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import type { AgentConfig, ToolDefinition, AnalysisResult, Issue, Recommendation, Action } from './types.js';
-
-const MONITORING_TOOLS: ToolDefinition[] = [
-  {
-    name: 'get_system_metrics',
-    description: 'Get comprehensive system metrics including CPU, memory, disk, and network usage for a specific node',
-    input_schema: {
-      type: 'object',
-      properties: {
-        nodeId: {
-          type: 'string',
-          description: 'The ID of the node to query',
-        },
-      },
-    },
-  },
-  {
-    name: 'get_processes',
-    description: 'Get list of running processes sorted by CPU or memory usage',
-    input_schema: {
-      type: 'object',
-      properties: {
-        nodeId: { type: 'string' },
-        limit: { type: 'number', default: 20 },
-        sort: { type: 'string', enum: ['cpu', 'mem'], default: 'cpu' },
-      },
-    },
-  },
-  {
-    name: 'get_service_status',
-    description: 'Check if a service is running on a specific node',
-    input_schema: {
-      type: 'object',
-      properties: {
-        nodeId: { type: 'string' },
-        service: { type: 'string' },
-      },
-      required: ['nodeId', 'service'],
-    },
-  },
-  {
-    name: 'restart_service',
-    description: 'Restart a failing service. Use only when confident it will help.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        nodeId: { type: 'string' },
-        service: { type: 'string' },
-        reason: { type: 'string', description: 'Why this restart is necessary' },
-      },
-      required: ['nodeId', 'service', 'reason'],
-    },
-  },
-  {
-    name: 'kill_process',
-    description: 'Terminate a runaway process. Use as last resort.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        nodeId: { type: 'string' },
-        pid: { type: 'number' },
-        reason: { type: 'string', description: 'Why this process must be killed' },
-      },
-      required: ['nodeId', 'pid', 'reason'],
-    },
-  },
-  {
-    name: 'tail_logs',
-    description: 'Read recent log entries to diagnose issues',
-    input_schema: {
-      type: 'object',
-      properties: {
-        nodeId: { type: 'string' },
-        path: { type: 'string' },
-        lines: { type: 'number', default: 100 },
-        filter: { type: 'string' },
-      },
-      required: ['nodeId', 'path'],
-    },
-  },
-  {
-    name: 'check_port',
-    description: 'Check if a network port is open',
-    input_schema: {
-      type: 'object',
-      properties: {
-        nodeId: { type: 'string' },
-        host: { type: 'string', default: 'localhost' },
-        port: { type: 'number' },
-      },
-      required: ['nodeId', 'port'],
-    },
-  },
-];
+import type {
+  AnyProviderConfig,
+  ChatMessage,
+  ToolDefinition,
+  AnalysisResult,
+} from './types.js';
+import { callProvider, getProviderInfo } from './providers.js';
 
 const ANALYSIS_PROMPT = `You are an expert systems monitoring and operations AI. Your role is to:
 
@@ -112,6 +25,7 @@ Guidelines:
 - Escalate when uncertain - human operators should make tough calls
 - Provide evidence for your conclusions
 - Consider cascading effects (e.g., disk full causes database crashes)
+- For local LLMs (Ollama, Open-WebUI), use concise prompts to work within smaller context windows
 
 Response format:
 Return a JSON object with:
@@ -148,17 +62,10 @@ Return a JSON object with:
 Consider historical context and patterns when available. Distinguish between transient spikes and sustained problems.`;
 
 export class Agent {
-  private client: Anthropic;
-  private config: AgentConfig;
+  private config: AnyProviderConfig;
 
-  constructor(config: AgentConfig) {
+  constructor(config: AnyProviderConfig) {
     this.config = config;
-
-    if (config.provider === 'anthropic') {
-      this.client = new Anthropic({ apiKey: config.apiKey });
-    } else {
-      throw new Error('OpenAI provider not yet implemented');
-    }
   }
 
   /**
@@ -170,98 +77,175 @@ export class Agent {
     recentAlerts?: Array<{ time: number; message: string }>;
   }): Promise<AnalysisResult> {
     const contextText = this.buildContextString(context);
+    const providerInfo = getProviderInfo(this.config.provider);
 
-    const messages: Anthropic.MessageParam[] = [
+    // Adjust prompt based on provider capabilities
+    let prompt = ANALYSIS_PROMPT;
+    if (this.config.provider === 'ollama' || this.config.provider === 'open-webui') {
+      // Use shorter prompts for local models
+      prompt = `You are a monitoring AI. Analyze the system state and respond in JSON:
+{
+  "issues": [{"type": "cpu|memory|disk", "severity": "info|warning|critical", "node": "id", "description": "what's wrong"}],
+  "actions": [{"type": "notify|remediate", "tool": "tool_name", "params": {}, "reason": "why"}],
+  "severity": "info|warning|critical",
+  "summary": "brief status"
+}
+
+System state:
+${contextText}`;
+    }
+
+    const messages: ChatMessage[] = [
+      { role: 'system', content: prompt },
       {
         role: 'user',
-        content: `${ANALYSIS_PROMPT}\n\nCurrent cluster state:\n${contextText}\n\nAnalyze this state and return your assessment in JSON format.`,
+        content: `${contextText}\n\nAnalyze this state and return your assessment in JSON format.`,
       },
     ];
 
     try {
-      const response = await this.client.messages.create({
-        model: this.config.model ?? 'claude-3-5-sonnet-20241022',
-        max_tokens: this.config.maxTokens ?? 4096,
-        temperature: this.config.temperature ?? 0,
-        messages,
-      });
+      const response = await callProvider(messages, this.config);
 
-      const content = response.content[0];
-      if (content.type === 'text') {
-        return this.parseAnalysisResult(content.text);
+      if (!response.success || !response.data) {
+        console.error('Agent analysis failed:', response.error);
+        return this.createErrorAnalysis(response.error ?? 'Unknown error');
       }
 
-      throw new Error('Unexpected response type from API');
+      return this.parseAnalysisResult(response.data.content);
     } catch (error) {
       console.error('Agent analysis failed:', error);
-      return {
-        issues: [],
-        recommendations: [],
-        actions: [{
-          type: 'notify',
-          reason: 'Agent analysis failed - manual review required',
-        }],
-        severity: 'warning',
-        summary: 'Analysis failed - check agent configuration',
-      };
+      return this.createErrorAnalysis(error instanceof Error ? error.message : String(error));
     }
   }
 
   /**
-   * Execute a tool with proper context
+   * Chat with the agent for interactive queries
    */
-  async executeTool(
-    toolName: string,
-    params: Record<string, unknown>,
-    execute: (nodeId: string, tool: string, params: Record<string, unknown>) => Promise<unknown>
-  ): Promise<unknown> {
-    const nodeId = params.nodeId as string | undefined;
-    if (!nodeId) {
-      throw new Error('nodeId is required for tool execution');
+  async chat(message: string, context?: {
+    nodes: Array<{ id: string; name: string; hostname: string }>;
+    metrics: Map<string, unknown>;
+  }): Promise<string> {
+    const messages: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful monitoring assistant. Provide clear, concise answers about system status.' },
+    ];
+
+    if (context) {
+      messages.push({
+        role: 'user',
+        content: `Current system state:\n${this.buildContextString(context)}\n\nQuestion: ${message}`,
+      });
+    } else {
+      messages.push({
+        role: 'user',
+        content: message,
+      });
     }
 
-    return execute(nodeId, toolName, params);
+    const response = await callProvider(messages, this.config);
+
+    if (!response.success || !response.data) {
+      throw new Error(response.error ?? 'Agent call failed');
+    }
+
+    return response.data.content;
   }
 
   /**
    * Get available tools for the agent
    */
   getTools(): ToolDefinition[] {
-    return MONITORING_TOOLS;
-  }
-
-  /**
-   * Get explanation for a decision
-   */
-  async explainDecision(
-    action: Action,
-    context: Record<string, unknown>
-  ): Promise<string> {
-    const prompt = `Explain why this action is appropriate given the context:
-
-Action: ${JSON.stringify(action)}
-
-Context:
-${JSON.stringify(context, null, 2)}
-
-Provide a clear, concise explanation for human operators.`;
-
-    try {
-      const response = await this.client.messages.create({
-        model: this.config.model ?? 'claude-3-5-sonnet-20241022',
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: prompt }],
-      });
-
-      const content = response.content[0];
-      if (content.type === 'text') {
-        return content.text;
-      }
-
-      return action.reason;
-    } catch {
-      return action.reason;
-    }
+    return [
+      {
+        name: 'get_system_metrics',
+        description: 'Get comprehensive system metrics including CPU, memory, disk, and network usage for a specific node',
+        input_schema: {
+          type: 'object',
+          properties: {
+            nodeId: {
+              type: 'string',
+              description: 'The ID of the node to query',
+            },
+          },
+        },
+      },
+      {
+        name: 'get_processes',
+        description: 'Get list of running processes sorted by CPU or memory usage',
+        input_schema: {
+          type: 'object',
+          properties: {
+            nodeId: { type: 'string' },
+            limit: { type: 'number', default: 20 },
+            sort: { type: 'string', enum: ['cpu', 'mem'], default: 'cpu' },
+          },
+        },
+      },
+      {
+        name: 'get_service_status',
+        description: 'Check if a service is running on a specific node',
+        input_schema: {
+          type: 'object',
+          properties: {
+            nodeId: { type: 'string' },
+            service: { type: 'string' },
+          },
+          required: ['nodeId', 'service'],
+        },
+      },
+      {
+        name: 'restart_service',
+        description: 'Restart a failing service. Use only when confident it will help.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            nodeId: { type: 'string' },
+            service: { type: 'string' },
+            reason: { type: 'string', description: 'Why this restart is necessary' },
+          },
+          required: ['nodeId', 'service', 'reason'],
+        },
+      },
+      {
+        name: 'kill_process',
+        description: 'Terminate a runaway process. Use as last resort.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            nodeId: { type: 'string' },
+            pid: { type: 'number' },
+            reason: { type: 'string', description: 'Why this process must be killed' },
+          },
+          required: ['nodeId', 'pid', 'reason'],
+        },
+      },
+      {
+        name: 'tail_logs',
+        description: 'Read recent log entries to diagnose issues',
+        input_schema: {
+          type: 'object',
+          properties: {
+            nodeId: { type: 'string' },
+            path: { type: 'string' },
+            lines: { type: 'number', default: 100 },
+            filter: { type: 'string' },
+          },
+          required: ['nodeId', 'path'],
+        },
+      },
+      {
+        name: 'check_port',
+        description: 'Check if a network port is open',
+        input_schema: {
+          type: 'object',
+          properties: {
+            nodeId: { type: 'string' },
+            host: { type: 'string', default: 'localhost' },
+            port: { type: 'number' },
+          },
+          required: ['nodeId', 'port'],
+        },
+      },
+    ];
   }
 
   /**
@@ -299,6 +283,13 @@ Provide a clear, concise explanation for human operators.`;
     parts.push(`**Summary:** ${analysis.summary}`);
 
     return parts.join('\n');
+  }
+
+  /**
+   * Get provider information
+   */
+  getProviderInfo() {
+    return getProviderInfo(this.config.provider);
   }
 
   private buildContextString(context: {
@@ -356,6 +347,16 @@ Provide a clear, concise explanation for human operators.`;
       actions: [{ type: 'notify', reason: 'Unable to parse agent response - review logs' }],
       severity: 'warning',
       summary: 'Analysis incomplete - see raw response',
+    };
+  }
+
+  private createErrorAnalysis(error: string): AnalysisResult {
+    return {
+      issues: [],
+      recommendations: [],
+      actions: [{ type: 'escalate', reason: `Agent analysis failed: ${error}` }],
+      severity: 'warning',
+      summary: 'Analysis failed - manual review required',
     };
   }
 }

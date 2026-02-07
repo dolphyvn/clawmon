@@ -1,32 +1,77 @@
 #!/usr/bin/env node
 /**
- * ClawMon CLI
+ * ClawMon CLI - supports multiple LLM providers
  */
 
 import { program } from 'commander';
 import { Gateway } from './gateway/gateway.js';
 import { Node } from './node/node.js';
-import { loadConfig } from './config/config.js';
 import { Agent } from './agent/agent.js';
 import { ChannelManager } from './channels/channels.js';
-import { CronScheduler, createHealthCheckJob, createDailyReportJob } from './cron/scheduler.js';
+import { CronScheduler, createHealthCheckJob } from './cron/scheduler.js';
+import { loadConfig, ensureApiKey, getProviderConfig } from './config/config.js';
+import { getProviderInfo } from './agent/providers.js';
+import type { LLMProvider } from './agent/types.js';
 
-program.name('clawmon').description('AI-first distributed monitoring system').version('0.1.0');
+const VALID_PROVIDERS: LLMProvider[] = [
+  'anthropic',
+  'openai',
+  'ollama',
+  'open-webui',
+  'groq',
+  'together',
+  'deepseek',
+  'google',
+];
+
+program.name('clawmon').description('AI-first distributed monitoring system').version('0.2.0');
 
 program
   .command('gateway')
   .description('Start the master gateway')
   .option('-p, --port <number>', 'Port to listen on', '18790')
   .option('-b, --bind <address>', 'Address to bind to', '0.0.0.0')
+  .option('--provider <provider>', `LLM provider (${VALID_PROVIDERS.join(', ')})`)
+  .option('--model <model>', 'Model name')
+  .option('--list-providers', 'List available LLM providers')
   .action(async (options) => {
+    if (options.listProviders) {
+      listProviders();
+      return;
+    }
+
     const config = await loadConfig();
+
+    // Override provider from command line or env var
+    const provider = (options.provider || process.env.CLAWMON_PROVIDER || config.agent.provider) as LLMProvider;
+    const providerConfig = options.provider || process.env.CLAWMON_PROVIDER
+      ? getProviderConfig(provider)
+      : config.agent;
+
+    // Override model if specified
+    if (options.model) {
+      (providerConfig as any).model = options.model;
+    }
+
+    // Ensure API key for providers that need it
+    try {
+      ensureApiKey(providerConfig);
+    } catch (error) {
+      console.error(`Error: ${(error as Error).message}`);
+      console.error('\nTo use this provider, either:');
+      console.error('  1. Set it in ~/.clawmon/config.json');
+      console.error('  2. Set the appropriate environment variable');
+      console.error('\nAvailable providers:');
+      listProviders();
+      process.exit(1);
+    }
 
     const gateway = new Gateway({
       port: parseInt(options.port),
       bind: options.bind,
     });
 
-    const agent = new Agent(config.agent);
+    const agent = new Agent(providerConfig);
     const channels = new ChannelManager(config.channels);
     const scheduler = new CronScheduler();
     const recentAlerts: Array<{ time: number; message: string }> = [];
@@ -78,16 +123,16 @@ program
 
         if (!lastAlert || now - lastAlert > cooldownMs) {
           const message = agent.formatAlert(analysis);
-          await channels[analysis.severity === 'critical' ? 'sendCritical' : 'sendWarning'](
+          const sendMethod = analysis.severity === 'critical' ? 'sendCritical' : 'sendWarning';
+          await channels[sendMethod](
             'Cluster Alert',
             message,
-            { nodes: nodes.length, issues: analysis.issues.length }
+            { nodes: nodes.length, issues: analysis.issues.length, provider }
           );
 
           recentAlerts.push({ time: now, message: analysis.summary });
           lastAlertTime.set(alertKey, now);
 
-          // Keep only last 100 alerts
           while (recentAlerts.length > 100) {
             recentAlerts.shift();
           }
@@ -117,19 +162,6 @@ program
 
     scheduler.addJob(healthCheckJob);
 
-    // Optional daily report
-    if (config.channels.slack?.webhookUrl) {
-      const dailyReportJob = createDailyReportJob(async () => {
-        const nodes = gateway.getNodes();
-        await channels.sendInfo(
-          'Daily Cluster Report',
-          `Cluster has ${nodes.length} nodes connected.\nAll systems operational.`,
-          { nodes: nodes.map((n) => ({ id: n.id, name: n.name })) }
-        );
-      }, 9);
-      scheduler.addJob(dailyReportJob);
-    }
-
     // Handle node events
     gateway.on('nodeEvent', (data: unknown) => {
       console.log('Node event:', data);
@@ -143,7 +175,11 @@ program
     gateway.start();
     scheduler.start();
 
-    console.log('Gateway started with AI agent and monitoring');
+    const providerInfo = getProviderInfo(provider);
+    console.log('Gateway started with monitoring agent');
+    console.log(`  Provider: ${providerInfo.name} (${provider})`);
+    console.log(`  Model: ${providerConfig.model || providerInfo.defaultModel}`);
+    console.log(`  Health check interval: ${config.monitoring?.checkInterval}ms`);
 
     // Graceful shutdown
     process.on('SIGINT', () => {
@@ -191,7 +227,6 @@ program
   .action(async (options) => {
     const config = await loadConfig();
 
-    // For now, just print config info
     if (options.json) {
       console.log(JSON.stringify(config, null, 2));
     } else {
@@ -201,6 +236,13 @@ program
       console.log(`  Agent Model: ${config.agent.model}`);
       console.log(`  Check Interval: ${config.monitoring?.checkInterval}ms`);
     }
+  });
+
+program
+  .command('providers')
+  .description('List available LLM providers')
+  .action(() => {
+    listProviders();
   });
 
 program
@@ -233,5 +275,32 @@ program
       process.exit(1);
     });
   });
+
+function listProviders(): void {
+  console.log('\nAvailable LLM Providers:\n');
+
+  for (const provider of VALID_PROVIDERS) {
+    const info = getProviderInfo(provider);
+    const required = info.requiresApiKey ? 'Required' : 'Optional';
+    console.log(`  ${provider.padEnd(15)} - ${info.name}`);
+    console.log(`  `.padEnd(15) + `Default: ${info.defaultModel}`);
+    console.log(`  `.padEnd(15) + `API Key: ${required}`);
+    console.log(`  `.padEnd(15) + `Base URL: ${info.defaultBaseUrl}`);
+    console.log('');
+  }
+
+  console.log('\nEnvironment Variables:\n');
+  console.log('  CLAWMON_PROVIDER      - Default provider to use');
+  console.log('  ANTHROPIC_API_KEY      - Anthropic API key');
+  console.log('  OPENAI_API_KEY        - OpenAI API key');
+  console.log('  OLLAMA_BASE_URL       - Ollama server URL (default: http://127.0.0.1:11434)');
+  console.log('  OLLAMA_MODEL          - Default Ollama model');
+  console.log('  OPEN_WEBUI_BASE_URL   - Open WebUI URL (default: http://localhost:3000)');
+  console.log('  GROQ_API_KEY          - Groq API key');
+  console.log('  TOGETHER_API_KEY      - Together AI API key');
+  console.log('  DEEPSEEK_API_KEY      - DeepSeek API key');
+  console.log('  GOOGLE_API_KEY        - Google Gemini API key');
+  console.log('');
+}
 
 program.parse();

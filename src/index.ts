@@ -7,8 +7,11 @@ export { Node } from './node/node.js';
 export { Agent } from './agent/agent.js';
 export { ChannelManager, ConsoleChannel, SlackChannel } from './channels/channels.js';
 export { CronScheduler, createHealthCheckJob, createDailyReportJob } from './cron/scheduler.js';
-export { loadConfig } from './config/config.js';
+export { loadConfig, getProviderConfig, ensureApiKey } from './config/config.js';
 export { systemTools } from './tools/system.js';
+
+// Provider exports
+export { callProvider, discoverOllamaModels, discoverOpenWebUIModels, getProviderInfo } from './agent/providers.js';
 
 export type {
   GatewayConfig,
@@ -32,6 +35,23 @@ export type {
   Issue,
   Recommendation,
   Action,
+  AgentMessage,
+} from './agent/types.js';
+
+export type {
+  LLMProvider,
+  AnyProviderConfig,
+  AnthropicConfig,
+  OpenAIConfig,
+  OllamaConfig,
+  OpenWebUIConfig,
+  GroqConfig,
+  TogetherConfig,
+  DeepSeekConfig,
+  GoogleConfig,
+  ChatMessage,
+  ChatResponse,
+  ProviderResponse,
 } from './agent/types.js';
 
 export type {
@@ -60,5 +80,6 @@ export type {
   ServiceStatus,
   LogEntry,
   ToolResult,
-  ToolDefinition as SystemToolDefinition,
 } from './tools/types.js';
+
+export type { ClawMonConfig } from './config/config.js';
