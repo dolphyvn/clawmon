@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: clawmon-node
+  namespace: clawmon
+  labels:
+    app: clawmon-node
+spec:
+  selector:
+    matchLabels:
+      app: clawmon-node
+  template:
+    metadata:
+      labels:
+        app: clawmon-node
+    spec:
+      serviceAccountName: clawmon-node
+      hostNetwork: false
+      hostPID: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: clawmon-node
+        image: clawmon:latest
+        imagePullPolicy: IfNotPresent
+        command: ["node", "/app/dist/cli.js", "node"]
+        args:
+          - --host=clawmon-gateway
+          - --port=18790
+          - --name=$(NODE_NAME)
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        volumeMounts:
+        - name: host-root
+          mountPath: /host
+          readOnly: true
+        - name: host-proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: host-sys
+          mountPath: /host/sys
+          readOnly: true
+        - name: host-var-run
+          mountPath: /host/var/run
+          readOnly: true
+        - name: host-log
+          mountPath: /host/var/log
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: host-root
+        hostPath:
+          path: /
+          type: ""
+      - name: host-proc
+        hostPath:
+          path: /proc
+          type: ""
+      - name: host-sys
+        hostPath:
+          path: /sys
+          type: ""
+      - name: host-var-run
+        hostPath:
+          path: /var/run
+          type: ""
+      - name: host-log
+        hostPath:
+          path: /var/log
+          type: Directory
+      tolerations:
+      - effect: NoSchedule
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+      # Optional: exclude master nodes
+      # - key: node-role.kubernetes.io/master
+      #   effect: NoSchedule
+      # - key: node-role.kubernetes.io/control-plane
+      #   effect: NoSchedule

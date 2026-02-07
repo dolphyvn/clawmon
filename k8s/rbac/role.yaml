@@ -1,0 +1,56 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: clawmon-node
+rules:
+# Node and pod access for metrics
+- apiGroups: [""]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["nodes/stats"]
+  verbs: ["get", "list"]
+# For reading configmaps/secrets if needed
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list"]
+  resourceNames: ["clawmon-config"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: clawmon-node
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: clawmon-node
+subjects:
+- kind: ServiceAccount
+  name: clawmon-node
+  namespace: clawmon
+---
+# Gateway role (minimal - just needs to manage its own resources)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: clawmon-gateway
+  namespace: clawmon
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list"]
+  resourceNames: ["clawmon-config", "clawmon-secrets"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: clawmon-gateway
+  namespace: clawmon
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: clawmon-gateway
+subjects:
+- kind: ServiceAccount
+  name: clawmon-gateway
+  namespace: clawmon

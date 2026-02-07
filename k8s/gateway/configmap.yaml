@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clawmon-config
+  namespace: clawmon
+data:
+  config.json: |
+    {
+      "gateway": {
+        "port": 18790,
+        "bind": "0.0.0.0"
+      },
+      "node": {
+        "gatewayHost": "clawmon-gateway",
+        "gatewayPort": 18790
+      },
+      "agent": {
+        "provider": "anthropic",
+        "model": "claude-3-5-sonnet-20241022",
+        "maxTokens": 4096,
+        "temperature": 0
+      },
+      "channels": {
+        "console": {
+          "enabled": true,
+          "colors": true
+        },
+        "slack": {
+          "webhookUrl": "${SLACK_WEBHOOK_URL}",
+          "channel": "${SLACK_CHANNEL:#alerts}",
+          "username": "ClawMon",
+          "iconEmoji": ":robot_face:"
+        }
+      },
+      "monitoring": {
+        "checkInterval": 60000,
+        "alertCooldown": 300000
+      }
+    }

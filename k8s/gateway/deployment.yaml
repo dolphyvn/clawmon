@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clawmon-gateway
+  namespace: clawmon
+  labels:
+    app: clawmon-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clawmon-gateway
+  template:
+    metadata:
+      labels:
+        app: clawmon-gateway
+      annotations:
+        prometheus.io/scrape: "false"
+    spec:
+      serviceAccountName: clawmon-gateway
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: gateway
+        image: clawmon:latest
+        imagePullPolicy: IfNotPresent
+        command: ["node", "/app/dist/cli.js", "gateway"]
+        args:
+          - --port=18790
+          - --bind=0.0.0.0
+        ports:
+        - name: websocket
+          containerPort: 18790
+          protocol: TCP
+        env:
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: clawmon-secrets
+              key: anthropic-api-key
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: clawmon-secrets
+              key: slack-webhook-url
+              optional: true
+        - name: SLACK_CHANNEL
+          valueFrom:
+            configMapKeyRef:
+              name: clawmon-config
+              key: slack-channel
+              optional: true
+        - name: NODE_ENV
+          value: production
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        livenessProbe:
+          tcpSocket:
+            port: websocket
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          tcpSocket:
+            port: websocket
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        volumeMounts:
+        - name: config
+          mountPath: /home/node/.clawmon
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: config
+        configMap:
+          name: clawmon-config
+      - name: tmp
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - clawmon-gateway
+              topologyKey: kubernetes.io/hostname

@@ -1,0 +1,26 @@
+# PodMonitor for scraping ClawMon gateway metrics (if using Prometheus Operator)
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: clawmon-gateway
+  namespace: clawmon
+  labels:
+    app: clawmon-gateway
+spec:
+  selector:
+    matchLabels:
+      app: clawmon-gateway
+  podMetricsEndpoints:
+  - port: websocket
+    interval: 30s
+    path: /metrics
+    relabelings:
+    - sourceLabels: [__address__]
+      targetLabel: __param_target
+    - sourceLabels: [__param_target]
+      targetLabel: instance
+    - action: labelmap
+      regex: __meta_kubernetes_pod_label_(.+)
+    - action: replace
+      replacement: clawmon-gateway
+      targetLabel: job

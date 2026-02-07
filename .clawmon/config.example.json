@@ -1,0 +1,34 @@
+{
+  "gateway": {
+    "port": 18790,
+    "bind": "0.0.0.0"
+  },
+  "node": {
+    "name": null,
+    "gatewayHost": "localhost",
+    "gatewayPort": 18790
+  },
+  "agent": {
+    "provider": "anthropic",
+    "apiKey": "sk-ant-your-key-here",
+    "model": "claude-3-5-sonnet-20241022",
+    "maxTokens": 4096,
+    "temperature": 0
+  },
+  "channels": {
+    "console": {
+      "enabled": true,
+      "colors": true
+    },
+    "slack": {
+      "webhookUrl": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL",
+      "channel": "#alerts",
+      "username": "ClawMon",
+      "iconEmoji": ":robot_face:"
+    }
+  },
+  "monitoring": {
+    "checkInterval": 60000,
+    "alertCooldown": 300000
+  }
+}

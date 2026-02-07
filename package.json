@@ -1,0 +1,41 @@
+{
+  "name": "clawmon",
+  "version": "0.1.0",
+  "description": "AI-first distributed monitoring system powered by LLM agents",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "clawmon": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli.js",
+    "test": "vitest"
+  },
+  "keywords": [
+    "monitoring",
+    "ai",
+    "llm",
+    "distributed",
+    "observability"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@clack/prompts": "^0.8.2",
+    "commander": "^12.1.0",
+    "ws": "^8.18.0",
+    "systeminformation": "^5.23.9"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
